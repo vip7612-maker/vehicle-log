@@ -2,8 +2,6 @@
 
 import { useEffect, useState, useCallback, FormEvent } from 'react';
 
-declare const XLSX: any;
-
 interface Record {
   id: string;
   date: string;
@@ -284,24 +282,26 @@ export default function Home() {
     setAutoSaving(false);
   };
 
-  // Excel export
-  const exportExcel = () => {
-    if (typeof XLSX === 'undefined') { showToast('⚠️ 엑셀 라이브러리 로딩 중...'); return; }
-    const data = allWithCum.map(r => ({
-      '운행일자': r.date, '사용자(운전자)': r.driver, '탑승인원': r.passengers,
-      '사용목적': r.purpose, '출발지': r.departure, '출발시간': r.departure_time || '',
-      '경유지': r.waypoint || '', '경유시간': r.waypoint_time || '',
-      '도착지': r.destination, '도착시간': r.destination_time || '',
-      '출발(km)': r.startKm, '도착(km)': r.endKm, '주행거리(km)': r.distance,
-      '차량정비/주유내역': r.maintenance || '', '고정기록': r.pinned ? '📌' : '',
-    }));
-    const ws = XLSX.utils.json_to_sheet(data);
-    ws['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 6 }, { wch: 20 }, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 18 }, { wch: 6 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '차량운행일지');
-    const now = new Date();
-    XLSX.writeFile(wb, `차량운행일지_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}.xlsx`);
-    showToast('📥 엑셀 파일이 다운로드되었습니다');
+  // Excel export (server-side styled)
+  const exportExcel = async () => {
+    showToast('📥 엑셀 파일 생성 중...');
+    try {
+      const res = await fetch('/api/export');
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const now = new Date();
+      a.download = `차량운행일지_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('📥 엑셀 파일이 다운로드되었습니다');
+    } catch (e) {
+      showToast('❌ 엑셀 다운로드 실패');
+    }
   };
 
   // Recent 5

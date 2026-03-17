@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
-import XLSX from 'xlsx-js-style';
+import * as XLSX from 'xlsx';
 
 export const runtime = 'nodejs';
 
-// Convert Excel serial date to YYYY-MM-DD
 function excelDateToStr(serial: number): string {
   const utcDays = Math.floor(serial - 25569);
   const d = new Date(utcDays * 86400000);
@@ -13,7 +12,7 @@ function excelDateToStr(serial: number): string {
 
 function parseDate(raw: any): string {
   if (!raw && raw !== 0) return '';
-  if (typeof raw === 'number' && raw > 40000 && raw < 60000) return excelDateToStr(raw);
+  if (typeof raw === 'number' && raw > 30000 && raw < 60000) return excelDateToStr(raw);
   const s = String(raw).trim();
   const m = s.match(/(\d{4})[-./\s](\d{1,2})[-./\s](\d{1,2})/);
   if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
@@ -27,18 +26,6 @@ function parsePlaceTime(val: any): [string, string] {
   return [lines[0]?.trim() || '', lines[1]?.trim() || ''];
 }
 
-// Read cell value from worksheet directly
-function cellVal(ws: any, r: number, c: number): any {
-  const addr = XLSX.utils.encode_cell({ r, c });
-  const cell = ws[addr];
-  return cell ? (cell.v !== undefined ? cell.v : '') : '';
-}
-
-// Get cell as string
-function cellStr(ws: any, r: number, c: number): string {
-  return String(cellVal(ws, r, c) || '').trim();
-}
-
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -46,26 +33,31 @@ export async function POST(request: NextRequest) {
     if (!file) return NextResponse.json({ error: '파일이 없습니다' }, { status: 400 });
 
     const buffer = Buffer.from(await file.arrayBuffer());
-    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false });
+    const wb = XLSX.read(buffer, { type: 'buffer' });
     const ws = wb.Sheets[wb.SheetNames[0]];
 
-    // Get worksheet range
-    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:L1');
+    if (!ws['!ref']) {
+      return NextResponse.json({ error: '빈 엑셀 파일입니다. 데이터가 있는 파일을 업로드해주세요.' }, { status: 400 });
+    }
+
+    const range = XLSX.utils.decode_range(ws['!ref']);
     const maxRow = range.e.r;
     const maxCol = range.e.c;
 
-    console.log('Import: range', `R0:C0 ~ R${maxRow}:C${maxCol}`);
+    // Helper: read cell
+    const cv = (r: number, c: number): any => {
+      const cell = ws[XLSX.utils.encode_cell({ r, c })];
+      return cell ? (cell.v !== undefined ? cell.v : '') : '';
+    };
+    const cs = (r: number, c: number): string => String(cv(r, c) || '').replace(/\n/g, ' ').trim();
 
-    // Strategy 1: Find header row by scanning for '운행일자' cell
-    // Strategy 2: Find first row with a date-like value in column A
+    console.log('Import: ref=', ws['!ref'], 'rows=', maxRow + 1, 'cols=', maxCol + 1);
+
+    // Find header row
     let headerRow = -1;
-    let dataStartRow = -1;
-    let colMap: Record<string, number> = {};
-
-    // Scan all rows in first 15 lines to find header
     for (let r = 0; r <= Math.min(maxRow, 15); r++) {
       for (let c = 0; c <= maxCol; c++) {
-        const v = cellStr(ws, r, c);
+        const v = cs(r, c);
         if (v.includes('운행일자') || v === '일자' || v === '날짜') {
           headerRow = r;
           break;
@@ -74,42 +66,39 @@ export async function POST(request: NextRequest) {
       if (headerRow >= 0) break;
     }
 
-    // If still not found, try merges - merged cells have the value in the top-left cell only
+    // Check merges
     if (headerRow < 0 && ws['!merges']) {
-      for (const merge of ws['!merges']) {
-        const v = cellStr(ws, merge.s.r, merge.s.c);
-        if (v.includes('운행일자')) {
-          headerRow = merge.s.r;
-          break;
-        }
+      for (const m of ws['!merges']) {
+        const v = cs(m.s.r, m.s.c);
+        if (v.includes('운행일자')) { headerRow = m.s.r; break; }
       }
     }
 
-    console.log('Import: headerRow =', headerRow);
+    // Build column map
+    let colMap: Record<string, number> = {};
+    let dataStartRow = -1;
 
     if (headerRow >= 0) {
-      // Read all header cells in this row, including merged cell values
-      const headerCells: string[] = [];
+      // Read header cells (accounting for merges)
+      const hdrs: string[] = [];
       for (let c = 0; c <= maxCol; c++) {
-        let v = cellStr(ws, headerRow, c);
-        // If cell is empty, check if it's covered by a merge from a previous row or column
+        let v = cs(headerRow, c);
         if (!v && ws['!merges']) {
           for (const m of ws['!merges']) {
             if (headerRow >= m.s.r && headerRow <= m.e.r && c >= m.s.c && c <= m.e.c) {
-              v = cellStr(ws, m.s.r, m.s.c);
+              v = cs(m.s.r, m.s.c);
               break;
             }
           }
         }
-        headerCells.push(v.replace(/\n/g, ' '));
+        hdrs.push(v);
       }
 
-      console.log('Import: headerCells =', headerCells);
+      console.log('Import: headers=', hdrs);
 
-      // Map columns
-      for (let c = 0; c < headerCells.length; c++) {
-        const h = headerCells[c];
-        if (h.includes('운행일자') || h === '일자' || h === '날짜') colMap['date'] = c;
+      for (let c = 0; c < hdrs.length; c++) {
+        const h = hdrs[c];
+        if (h.includes('운행일자') || h === '일자') colMap['date'] = c;
         else if (h.includes('사용자') || h.includes('운전자')) colMap['driver'] = c;
         else if (h.includes('탑승')) colMap['passengers'] = c;
         else if (h.includes('목적')) colMap['purpose'] = c;
@@ -118,126 +107,85 @@ export async function POST(request: NextRequest) {
         else if (h.includes('도착지')) colMap['destination'] = c;
         else if (h.includes('운행거리')) colMap['distArea'] = c;
         else if (h.includes('정비') || h.includes('주유')) colMap['maintenance'] = c;
-        else if (h.includes('관리자')) colMap['admin'] = c;
       }
 
-      // Check sub-header row for distance columns
-      const subRow = headerRow + 1;
-      if (subRow <= maxRow) {
-        const subCells: string[] = [];
+      // Check sub-header row
+      const sr = headerRow + 1;
+      let hasSub = false;
+      if (sr <= maxRow) {
         for (let c = 0; c <= maxCol; c++) {
-          subCells.push(cellStr(ws, subRow, c));
+          const h = cs(sr, c);
+          if (h === '출발' && !colMap['startKm']) { colMap['startKm'] = c; hasSub = true; }
+          else if (h === '도착' && !colMap['endKm']) { colMap['endKm'] = c; hasSub = true; }
+          else if (h.includes('주행')) { colMap['distance'] = c; hasSub = true; }
         }
-        console.log('Import: subRow cells =', subCells);
-
-        let hasSubHeaders = false;
-        for (let c = 0; c < subCells.length; c++) {
-          const h = subCells[c];
-          if (h === '출발' && colMap['startKm'] === undefined) { colMap['startKm'] = c; hasSubHeaders = true; }
-          else if (h === '도착' && colMap['endKm'] === undefined) { colMap['endKm'] = c; hasSubHeaders = true; }
-          else if (h.includes('주행')) { colMap['distance'] = c; hasSubHeaders = true; }
-        }
-
-        dataStartRow = hasSubHeaders ? subRow + 1 : headerRow + 1;
-      } else {
-        dataStartRow = headerRow + 1;
       }
-    }
-
-    // Fallback strategy: no header found, assume dates start from first data-like row
-    if (headerRow < 0) {
-      console.log('Import: no header found, trying fallback strategy');
-      // Look for first row with a date-like value
+      dataStartRow = hasSub ? sr + 1 : headerRow + 1;
+    } else {
+      // Fallback: find first row with date
       for (let r = 0; r <= maxRow; r++) {
-        const v = cellVal(ws, r, 0);
-        const dateStr = parseDate(v);
-        if (dateStr) {
+        if (parseDate(cv(r, 0))) {
           dataStartRow = r;
-          // Assume standard column order
           colMap = { date: 0, driver: 1, passengers: 2, purpose: 3, departure: 4, waypoint: 5, destination: 6, startKm: 7, endKm: 8, distance: 9, maintenance: 10 };
           break;
         }
       }
     }
 
-    console.log('Import: dataStartRow =', dataStartRow, 'colMap =', colMap);
+    console.log('Import: dataStart=', dataStartRow, 'colMap=', colMap);
 
     if (dataStartRow < 0) {
-      return NextResponse.json({
-        error: '엑셀 양식을 인식할 수 없습니다. "운행일자" 헤더 또는 날짜 데이터를 찾을 수 없습니다.',
-      }, { status: 400 });
+      return NextResponse.json({ error: '엑셀 양식을 인식할 수 없습니다.' }, { status: 400 });
     }
 
-    // Parse data rows
+    // Parse data
     const imported: any[] = [];
-    let parseErrors = 0;
+    let skipped = 0;
 
     for (let r = dataStartRow; r <= maxRow; r++) {
       try {
-        // Read date
-        const dateCol = colMap['date'] ?? 0;
-        const dateRaw = cellVal(ws, r, dateCol);
-        const date = parseDate(dateRaw);
-        if (!date) continue; // Skip rows without valid date
+        const date = parseDate(cv(r, colMap['date'] ?? 0));
+        if (!date) continue;
 
-        // Read driver
-        const driverCol = colMap['driver'] ?? 1;
-        const driver = cellStr(ws, r, driverCol);
-        if (!driver) { parseErrors++; continue; }
+        const driver = cs(r, colMap['driver'] ?? 1);
+        if (!driver) { skipped++; continue; }
 
-        // Read other fields
-        const passCol = colMap['passengers'] ?? 2;
-        const passengers = parseInt(String(cellVal(ws, r, passCol))) || 1;
+        const passengers = parseInt(String(cv(r, colMap['passengers'] ?? 2))) || 1;
+        const purpose = cs(r, colMap['purpose'] ?? 3) || '업무';
 
-        const purposeCol = colMap['purpose'] ?? 3;
-        const purpose = cellStr(ws, r, purposeCol) || '업무';
+        const [dep, depT] = parsePlaceTime(cv(r, colMap['departure'] ?? 4));
+        const [wp, wpT] = parsePlaceTime(cv(r, colMap['waypoint'] ?? 5));
+        const [dest, destT] = parsePlaceTime(cv(r, colMap['destination'] ?? 6));
 
-        const depCol = colMap['departure'] ?? 4;
-        const [departure, departureTime] = parsePlaceTime(cellVal(ws, r, depCol));
+        if (!dep && !dest) { skipped++; continue; }
 
-        const wpCol = colMap['waypoint'] ?? 5;
-        const [waypoint, waypointTime] = parsePlaceTime(cellVal(ws, r, wpCol));
-
-        const destCol = colMap['destination'] ?? 6;
-        const [destination, destinationTime] = parsePlaceTime(cellVal(ws, r, destCol));
-
-        if (!departure && !destination) { parseErrors++; continue; }
-
-        // Distance
-        let distance = 0;
+        let dist = 0;
         if (colMap['distance'] !== undefined) {
-          distance = parseInt(String(cellVal(ws, r, colMap['distance']))) || 0;
+          dist = parseInt(String(cv(r, colMap['distance']))) || 0;
         } else if (colMap['startKm'] !== undefined && colMap['endKm'] !== undefined) {
-          const sk = parseInt(String(cellVal(ws, r, colMap['startKm']))) || 0;
-          const ek = parseInt(String(cellVal(ws, r, colMap['endKm']))) || 0;
-          distance = ek - sk;
+          const sk = parseInt(String(cv(r, colMap['startKm']))) || 0;
+          const ek = parseInt(String(cv(r, colMap['endKm']))) || 0;
+          dist = ek - sk;
         }
 
-        const maintCol = colMap['maintenance'] ?? 10;
-        const maintenance = cellStr(ws, r, maintCol);
+        const maint = colMap['maintenance'] !== undefined ? cs(r, colMap['maintenance']) : '';
 
         imported.push({
           date, driver, passengers, purpose,
-          departure: departure || '미입력', departureTime,
-          waypoint, waypointTime,
-          destination: destination || '미입력', destinationTime,
-          distance: Math.abs(distance), maintenance, pinned: false,
+          departure: dep || '미입력', departureTime: depT,
+          waypoint: wp, waypointTime: wpT,
+          destination: dest || '미입력', destinationTime: destT,
+          distance: Math.abs(dist), maintenance: maint,
         });
-      } catch (err) {
-        parseErrors++;
-        console.error('Import row error at R' + r, err);
-      }
+      } catch { skipped++; }
     }
 
-    console.log('Import: parsed', imported.length, 'records,', parseErrors, 'errors');
+    console.log('Import: parsed=', imported.length, 'skipped=', skipped);
 
     if (imported.length === 0) {
-      return NextResponse.json({
-        error: `가져올 데이터가 없습니다. (${parseErrors}건 파싱 실패)`,
-      }, { status: 400 });
+      return NextResponse.json({ error: `가져올 데이터가 없습니다. (${skipped}건 건너뜀)` }, { status: 400 });
     }
 
-    // Save to DB
     let saved = 0;
     for (const rec of imported) {
       try {
@@ -248,15 +196,12 @@ export async function POST(request: NextRequest) {
         });
         saved++;
         await new Promise(resolve => setTimeout(resolve, 3));
-      } catch (dbErr) {
-        console.error('Import DB error:', dbErr);
-      }
+      } catch (e) { console.error('Import DB err:', e); }
     }
 
-    return NextResponse.json({ ok: true, count: saved, parseErrors });
+    return NextResponse.json({ ok: true, count: saved, skipped });
   } catch (error) {
-    console.error('Import fatal error:', error);
-    const msg = error instanceof Error ? error.message : '알 수 없는 오류';
-    return NextResponse.json({ error: `파일 처리 오류: ${msg}` }, { status: 500 });
+    console.error('Import fatal:', error);
+    return NextResponse.json({ error: `파일 처리 오류: ${error instanceof Error ? error.message : '알 수 없음'}` }, { status: 500 });
   }
 }

@@ -511,50 +511,92 @@ export default function Home() {
 
         {/* Log Tab */}
         {tab === 'log' && (
-          <div className="card" style={{ animation: 'fadeIn 0.3s ease' }}>
-            <div className="card-header">
-              <h2>📋 운행일지</h2>
-              <div className="filter-group">
-                <select className="filter-select" value={filterDriver} onChange={e => setFilterDriver(e.target.value)}>
-                  <option value="">전체 운전자</option>
-                  {drivers.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
-                </select>
-                <input type="month" className="filter-input" value={filterMonth} onChange={e => setFilterMonth(e.target.value)} />
-                <button className="btn btn-ghost btn-sm" onClick={() => { setFilterDriver(''); setFilterMonth(''); }}>필터 초기화</button>
+          <div style={{ animation: 'fadeIn 0.3s ease' }}>
+            {/* Title bar */}
+            <div className="card" style={{ marginBottom: 0, borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}>
+              <div className="card-header">
+                <h2>📋 차량운행 및 정비일지</h2>
+                <div className="filter-group">
+                  <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
+                    📤 엑셀 가져오기
+                    <input type="file" accept=".xlsx,.xls" hidden onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      showToast('📤 엑셀 파일 가져오는 중...');
+                      const fd = new FormData();
+                      fd.append('file', file);
+                      try {
+                        const res = await fetch('/api/import', { method: 'POST', body: fd });
+                        const data = await res.json();
+                        if (data.error) showToast(`⚠️ ${data.error}`);
+                        else { showToast(`✅ ${data.count}건의 기록을 가져왔습니다!`); loadAll(); }
+                      } catch { showToast('❌ 파일 가져오기 실패'); }
+                      e.target.value = '';
+                    }} />
+                  </label>
+                  <select className="filter-select" value={filterDriver} onChange={e => setFilterDriver(e.target.value)}>
+                    <option value="">전체 운전자</option>
+                    {drivers.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
+                  </select>
+                  <input type="month" className="filter-input" value={filterMonth} onChange={e => setFilterMonth(e.target.value)} />
+                  <button className="btn btn-ghost btn-sm" onClick={() => { setFilterDriver(''); setFilterMonth(''); }}>필터 초기화</button>
+                </div>
               </div>
             </div>
             {filteredRecords.length === 0 ? (
-              <div className="empty-state"><div className="empty-icon">📋</div><p>운행 기록이 없습니다</p></div>
+              <div className="card" style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
+                <div className="empty-state"><div className="empty-icon">📋</div><p>운행 기록이 없습니다</p><small>엑셀 파일을 가져오거나 기록 작성에서 추가하세요</small></div>
+              </div>
             ) : (
-              <>
-                <div className="table-wrapper">
-                  <table className="log-table">
-                    <thead><tr>
-                      <th>운행일자</th><th>운전자</th><th>탑승</th><th>사용목적</th>
-                      <th>출발지<br /><small>(시간)</small></th><th>경유지<br /><small>(시간)</small></th><th>도착지<br /><small>(시간)</small></th>
-                      <th>출발<br /><small>(km)</small></th><th>도착<br /><small>(km)</small></th><th>주행<br /><small>(km)</small></th>
-                      <th>정비/주유</th><th>📌</th><th>관리</th>
-                    </tr></thead>
+              <div style={{ borderRadius: '0 0 var(--radius) var(--radius)', overflow: 'hidden' }}>
+                <div className="table-wrapper" style={{ margin: 0 }}>
+                  <table className="log-table" style={{ borderCollapse: 'collapse', width: '100%' }}>
+                    <thead>
+                      <tr>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle' }}>운행일자</th>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle' }}>사용자<br/><small>(운전자)</small></th>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle' }}>탑승<br/>인원</th>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle' }}>사용<br/>목적</th>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle' }}>출발지<br/><small>(시간)</small></th>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle' }}>경유지<br/><small>(시간)</small></th>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle' }}>도착지<br/><small>(시간)</small></th>
+                        <th colSpan={3} style={{ borderBottom: '1px solid var(--border)' }}>운행거리(km)</th>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle' }}>차량정비<br/>주유내역</th>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle' }}>관리자<br/>확인</th>
+                      </tr>
+                      <tr>
+                        <th>출발</th>
+                        <th>도착</th>
+                        <th>주행거리</th>
+                      </tr>
+                    </thead>
                     <tbody>{filteredRecords.map(r => (
-                      <tr key={r.id} className={r.pinned ? 'pinned-row' : ''}>
-                        <td>{r.date}</td><td>{r.driver}</td><td>{r.passengers}</td>
-                        <td style={{ textAlign: 'left', whiteSpace: 'normal', maxWidth: 140 }}>{r.purpose}</td>
-                        <td>{r.departure}<br /><small>{r.departure_time}</small></td>
-                        <td>{r.waypoint || ''}<br /><small>{r.waypoint_time || ''}</small></td>
-                        <td>{r.destination}<br /><small>{r.destination_time}</small></td>
-                        <td>{fmt(r.startKm)}</td><td>{fmt(r.endKm)}</td><td><strong>{fmt(r.distance)}</strong></td>
-                        <td style={{ textAlign: 'left', whiteSpace: 'normal', maxWidth: 100 }}>{r.maintenance || ''}</td>
-                        <td>{r.pinned ? '📌' : ''}</td>
-                        <td><div className="action-btns">
-                          <button className="btn-edit" onClick={() => openEdit(r)}>✏️</button>
-                          <button className="btn-del" onClick={() => handleDeleteRecord(r.id)}>🗑️</button>
-                        </div></td>
+                      <tr key={r.id} className={r.pinned ? 'pinned-row' : ''} onDoubleClick={() => openEdit(r)} style={{ cursor: 'pointer' }} title="더블클릭으로 수정">
+                        <td>{r.date}</td>
+                        <td>{r.driver}</td>
+                        <td>{r.passengers}</td>
+                        <td style={{ textAlign: 'left', whiteSpace: 'normal', maxWidth: 150 }}>{r.purpose}</td>
+                        <td>{r.departure}<br/><small style={{ color: 'var(--text-muted)' }}>{r.departure_time || ''}</small></td>
+                        <td>{r.waypoint || ''}{r.waypoint_time ? <><br/><small style={{ color: 'var(--text-muted)' }}>{r.waypoint_time}</small></> : ''}</td>
+                        <td>{r.destination}<br/><small style={{ color: 'var(--text-muted)' }}>{r.destination_time || ''}</small></td>
+                        <td style={{ textAlign: 'right' }}>{fmt(r.startKm)}</td>
+                        <td style={{ textAlign: 'right' }}>{fmt(r.endKm)}</td>
+                        <td style={{ textAlign: 'right' }}><strong>{fmt(r.distance)}</strong></td>
+                        <td style={{ textAlign: 'left', whiteSpace: 'normal', maxWidth: 120 }}>{r.maintenance || ''}</td>
+                        <td>
+                          <div className="action-btns">
+                            {r.pinned ? <span title="고정 기록">📌</span> : ''}
+                            <button className="btn-del" onClick={(e) => { e.stopPropagation(); handleDeleteRecord(r.id); }} title="삭제">🗑️</button>
+                          </div>
+                        </td>
                       </tr>
                     ))}</tbody>
                   </table>
                 </div>
-                <div className="table-footer">총 {filteredRecords.length}건 · 총 주행거리: {fmt(totalDist)}km</div>
-              </>
+                <div className="table-footer" style={{ borderRadius: '0 0 var(--radius) var(--radius)' }}>
+                  총 {filteredRecords.length}건 · 총 주행거리: {fmt(totalDist)}km · 누적: {fmt(filteredRecords.length > 0 ? filteredRecords[filteredRecords.length - 1].endKm : startOdo)}km
+                </div>
+              </div>
             )}
           </div>
         )}

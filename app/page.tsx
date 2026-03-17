@@ -60,6 +60,16 @@ export default function Home() {
   const [modalPurpose, setModalPurpose] = useState(false);
   const [modalEdit, setModalEdit] = useState(false);
 
+  // Auto-generate state
+  const [autoTarget, setAutoTarget] = useState(0);
+  const [autoStartDate, setAutoStartDate] = useState('');
+  const [autoEndDate, setAutoEndDate] = useState('');
+  const [autoMandatory, setAutoMandatory] = useState<{date:string;driver:string;departure:string;waypoint:string;destination:string;purpose:string;distance:number}[]>([]);
+  const [autoPreview, setAutoPreview] = useState<any[]>([]);
+  const [autoSummary, setAutoSummary] = useState<any>(null);
+  const [autoGenerating, setAutoGenerating] = useState(false);
+  const [autoSaving, setAutoSaving] = useState(false);
+
   // Modal inputs
   const [newDriverName, setNewDriverName] = useState('');
   const [newRoute, setNewRoute] = useState({ name: '', departure: '', waypoint: '', destination: '', distance: 0 });
@@ -233,6 +243,47 @@ export default function Home() {
     showToast('✅ 시작 누적거리가 저장되었습니다');
   };
 
+  // Auto-generate handlers
+  const addMandatory = () => {
+    setAutoMandatory(m => [...m, { date: '', driver: '', departure: '', waypoint: '', destination: '', purpose: '', distance: 0 }]);
+  };
+  const removeMandatory = (idx: number) => {
+    setAutoMandatory(m => m.filter((_, i) => i !== idx));
+  };
+  const updateMandatory = (idx: number, field: string, value: string | number) => {
+    setAutoMandatory(m => m.map((item, i) => i === idx ? { ...item, [field]: value } : item));
+  };
+  const handleAutoGenerate = async () => {
+    if (!autoTarget || autoTarget <= lastOdo) { showToast(`⚠️ 목표 누적거리는 현재(${fmt(lastOdo)}km)보다 커야 합니다`); return; }
+    if (!autoStartDate || !autoEndDate) { showToast('⚠️ 시작일과 종료일을 입력해주세요'); return; }
+    if (autoStartDate > autoEndDate) { showToast('⚠️ 시작일이 종료일보다 앞서야 합니다'); return; }
+    setAutoGenerating(true);
+    try {
+      const res = await fetch('/api/auto-generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetOdometer: autoTarget, startDate: autoStartDate, endDate: autoEndDate, mandatory: autoMandatory.filter(m => m.date && m.departure && m.destination && m.distance) }),
+      });
+      const data = await res.json();
+      if (data.error) { showToast(`⚠️ ${data.error}`); }
+      else { setAutoPreview(data.preview); setAutoSummary(data.summary); showToast(`✅ ${data.preview.length}건의 기록이 생성되었습니다. 미리보기를 확인하세요.`); }
+    } catch (e) { showToast('❌ 자동생성 중 오류 발생'); }
+    setAutoGenerating(false);
+  };
+  const handleAutoSave = async () => {
+    if (!confirm(`${autoPreview.length}건의 기록을 저장하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
+    setAutoSaving(true);
+    try {
+      await fetch('/api/auto-generate', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ records: autoPreview }),
+      });
+      showToast(`✅ ${autoPreview.length}건의 기록이 저장되었습니다!`);
+      setAutoPreview([]); setAutoSummary(null);
+      loadAll();
+    } catch (e) { showToast('❌ 저장 중 오류 발생'); }
+    setAutoSaving(false);
+  };
+
   // Excel export
   const exportExcel = () => {
     if (typeof XLSX === 'undefined') { showToast('⚠️ 엑셀 라이브러리 로딩 중...'); return; }
@@ -279,7 +330,7 @@ export default function Home() {
       {/* Tabs */}
       <nav className="tab-nav">
         <div className="tab-container">
-          {[['record', '✏️', '기록 작성'], ['log', '📋', '운행일지'], ['settings', '⚙️', '설정']].map(([key, icon, label]) => (
+          {[['record', '✏️', '기록 작성'], ['autogen', '🤖', '자동생성'], ['log', '📋', '운행일지'], ['settings', '⚙️', '설정']].map(([key, icon, label]) => (
             <button key={key} className={`tab-btn ${tab === key ? 'active' : ''}`} onClick={() => setTab(key)}>
               <span className="tab-icon">{icon}</span><span>{label}</span>
             </button>
@@ -355,6 +406,106 @@ export default function Home() {
                 <div className="info-item"><span className="info-label">이번 달 운행</span><span className="info-value">{monthlyTrips} 건</span></div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Auto-Generate Tab */}
+        {tab === 'autogen' && (
+          <div style={{ animation: 'fadeIn 0.3s ease' }}>
+            <div className="card" style={{ marginBottom: 24 }}>
+              <div className="card-header"><h2>🤖 자동 운행기록 생성</h2><span className="badge">패턴 분석</span></div>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 20, lineHeight: 1.6 }}>
+                현재 누적거리: <strong style={{ color: 'var(--accent-light)' }}>{fmt(lastOdo)} km</strong> · 목표 누적거리를 입력하면 과거 운행 패턴(경로·운전자·시간대)을 분석하여 자동으로 기록을 생성합니다.
+              </p>
+              <div className="form-row">
+                <div className="form-group"><label>🎯 목표 누적거리 (km)</label><input type="number" min={lastOdo + 1} value={autoTarget || ''} onChange={e => setAutoTarget(parseInt(e.target.value) || 0)} placeholder={`현재: ${fmt(lastOdo)}km`} /></div>
+                <div className="form-group"><label>📅 시작일</label><input type="date" value={autoStartDate} onChange={e => setAutoStartDate(e.target.value)} /></div>
+                <div className="form-group"><label>📅 종료일</label><input type="date" value={autoEndDate} onChange={e => setAutoEndDate(e.target.value)} /></div>
+              </div>
+              {autoTarget > lastOdo && <div style={{ background: 'var(--bg-glass)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 16, fontSize: '0.85rem' }}>
+                📊 채워야 할 거리: <strong style={{ color: 'var(--success)' }}>{fmt(autoTarget - lastOdo)} km</strong>
+              </div>}
+
+              {/* Mandatory Records */}
+              <div className="route-section">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                  <h3>📌 필수 기록 (꼭 포함할 운행)</h3>
+                  <button className="btn btn-primary btn-sm" onClick={addMandatory}>+ 추가</button>
+                </div>
+                {autoMandatory.length === 0 && <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>필수로 포함할 운행기록을 추가하세요. (선택사항)</p>}
+                {autoMandatory.map((m, idx) => (
+                  <div key={idx} style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 14, marginBottom: 10 }}>
+                    <div className="form-row">
+                      <div className="form-group"><label>날짜</label><input type="date" value={m.date} onChange={e => updateMandatory(idx, 'date', e.target.value)} /></div>
+                      <div className="form-group"><label>운전자</label>
+                        <select value={m.driver} onChange={e => updateMandatory(idx, 'driver', e.target.value)}>
+                          <option value="">자동</option>
+                          {drivers.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
+                        </select>
+                      </div>
+                      <div className="form-group"><label>목적</label>
+                        <input type="text" value={m.purpose} onChange={e => updateMandatory(idx, 'purpose', e.target.value)} placeholder="예: 출장" list="purposeList" />
+                      </div>
+                    </div>
+                    <div className="form-row">
+                      <div className="form-group"><label>출발지</label><input type="text" value={m.departure} onChange={e => updateMandatory(idx, 'departure', e.target.value)} placeholder="출발지" /></div>
+                      <div className="form-group"><label>경유지</label><input type="text" value={m.waypoint} onChange={e => updateMandatory(idx, 'waypoint', e.target.value)} placeholder="선택" /></div>
+                      <div className="form-group"><label>도착지</label><input type="text" value={m.destination} onChange={e => updateMandatory(idx, 'destination', e.target.value)} placeholder="도착지" /></div>
+                      <div className="form-group"><label>거리(km)</label><input type="number" min={0} value={m.distance || ''} onChange={e => updateMandatory(idx, 'distance', parseInt(e.target.value) || 0)} /></div>
+                      <div className="form-group" style={{ flex: 'none', alignSelf: 'flex-end' }}><button className="btn btn-danger btn-sm" onClick={() => removeMandatory(idx)}>✕ 삭제</button></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="form-actions" style={{ marginTop: 16 }}>
+                <button className="btn btn-primary btn-lg" onClick={handleAutoGenerate} disabled={autoGenerating}>
+                  {autoGenerating ? '⏳ 생성 중...' : '🤖 자동 생성하기'}
+                </button>
+              </div>
+            </div>
+
+            {/* Auto-Generated Preview */}
+            {autoPreview.length > 0 && (
+              <div className="card">
+                <div className="card-header">
+                  <h2>👁️ 미리보기 ({autoPreview.length}건)</h2>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    {autoSummary && <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                      {fmt(autoSummary.currentOdometer)}km → {fmt(autoSummary.targetOdometer)}km · 총 {fmt(autoSummary.totalDistance)}km
+                    </span>}
+                    <button className="btn btn-ghost btn-sm" onClick={() => { setAutoPreview([]); setAutoSummary(null); }}>초기화</button>
+                    <button className="btn btn-accent" onClick={handleAutoSave} disabled={autoSaving}>
+                      {autoSaving ? '⏳ 저장 중...' : `✅ ${autoPreview.length}건 확정 저장`}
+                    </button>
+                  </div>
+                </div>
+                <div className="table-wrapper">
+                  <table className="log-table">
+                    <thead><tr>
+                      <th>운행일자</th><th>운전자</th><th>탑승</th><th>사용목적</th>
+                      <th>출발지<br/><small>(시간)</small></th><th>경유지</th><th>도착지<br/><small>(시간)</small></th>
+                      <th>주행(km)</th><th>📌</th>
+                    </tr></thead>
+                    <tbody>{autoPreview.map((r: any, i: number) => (
+                      <tr key={i} className={r.pinned ? 'pinned-row' : ''}>
+                        <td>{r.date}</td><td>{r.driver}</td><td>{r.passengers}</td>
+                        <td style={{ textAlign: 'left', whiteSpace: 'normal', maxWidth: 120 }}>{r.purpose}</td>
+                        <td>{r.departure}<br/><small>{r.departureTime}</small></td>
+                        <td>{r.waypoint || ''}</td>
+                        <td>{r.destination}<br/><small>{r.destinationTime}</small></td>
+                        <td><strong>{fmt(r.distance)}</strong></td>
+                        <td>{r.pinned ? '📌' : ''}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+                <div className="table-footer">
+                  총 {autoPreview.length}건 · 총 주행거리: {fmt(autoPreview.reduce((s: number, r: any) => s + r.distance, 0))}km
+                  {autoSummary && <> · 필수기록: {autoSummary.mandatoryCount}건</>}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

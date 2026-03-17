@@ -32,7 +32,7 @@ export async function POST() {
     if (Number(routeCount.rows[0].cnt) === 0) {
       for (const r of DEFAULT_ROUTES) {
         await db.execute({
-          sql: 'INSERT INTO routes (name, departure, waypoint, destination, distance) VALUES (?, ?, ?, ?, ?)',
+          sql: 'INSERT OR IGNORE INTO routes (name, departure, waypoint, destination, distance) VALUES (?, ?, ?, ?, ?)',
           args: [r.name, r.departure, r.waypoint, r.destination, r.distance],
         });
       }

@@ -32,7 +32,7 @@ export async function initDB() {
     )`,
     `CREATE TABLE IF NOT EXISTS routes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
+      name TEXT NOT NULL UNIQUE,
       departure TEXT NOT NULL,
       waypoint TEXT,
       destination TEXT NOT NULL,
